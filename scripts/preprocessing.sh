@@ -12,11 +12,16 @@ wget -nc https://jaqket.s3-ap-northeast-1.amazonaws.com/data/dev1_questions.json
 wget -nc https://jaqket.s3-ap-northeast-1.amazonaws.com/data/dev2_questions.json -P ${DATA_DIR}
 wget -nc https://jaqket.s3-ap-northeast-1.amazonaws.com/data/candidate_entities.json.gz -P ${DATA_DIR}
 
+# name of working dir
+echo 'name of working dir'
+read NAME
 
-WORK_DIR="../working_dir/"
+WORK_DIR="../${NAME}/"
 if [ ! -d ${WORK_DIR} ]; then
-  mkdir ${WORK_DIR}
+  mkdir -p ${WORK_DIR}/sh
   cp ../JAQKET_baseline/run_jaqket_baseline_sample.sh ${WORK_DIR}
+  cp ../JAQKET_baseline/run.sh ${WORK_DIR}
+  cp -r ../JAQKET_baseline/sh ${WORK_DIR}/sh
 fi
 
 echo "next ..."
