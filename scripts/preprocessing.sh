@@ -21,7 +21,7 @@ if [ ! -d ${WORK_DIR} ]; then
   mkdir -p ${WORK_DIR}/sh
   cp ../JAQKET_baseline/run_jaqket_baseline_sample.sh ${WORK_DIR}
   cp ../JAQKET_baseline/run.sh ${WORK_DIR}
-  cp -r ../JAQKET_baseline/sh ${WORK_DIR}/sh
+  cp -r ../JAQKET_baseline/sh/ ${WORK_DIR}/
 fi
 
 echo "next ..."
