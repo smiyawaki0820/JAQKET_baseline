@@ -12,6 +12,8 @@ wget -nc https://jaqket.s3-ap-northeast-1.amazonaws.com/data/dev1_questions.json
 wget -nc https://jaqket.s3-ap-northeast-1.amazonaws.com/data/dev2_questions.json -P ${DATA_DIR}
 wget -nc https://jaqket.s3-ap-northeast-1.amazonaws.com/data/candidate_entities.json.gz -P ${DATA_DIR}
 
+wget -nc https://www.nlp.ecei.tohoku.ac.jp/projects/AIP-LB/static/aio_leaderboard.json -P ${DATA_DIR}
+
 # name of working dir
 echo 'name of working dir'
 read NAME
