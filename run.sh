@@ -1,6 +1,6 @@
 #!/bin/bash -x
 
-echo 'train/test/both'
+echo 'train/test/both(train, test)/develop'
 read MODE
 
 
@@ -36,14 +36,34 @@ cp /tmp/work.txt output_dir/configs.txt
 if [ ${MODE} = 'train' ] || [ ${MODE} = 'both' ] ; then
   echo 'TRAIN'
   bash sh/train.sh
-fi
 
-
-if [ ${MODE} = 'test' ] || [ ${MODE} = 'both' ] ; then
+elif [ ${MODE} = 'test' ] || [ ${MODE} = 'both' ] ; then
   echo 'TEST'
   bash sh/test.sh
-fi
 
+elif [ ${MODE} == 'develop' ] ; then
+  
+  GPU=`nvidia-smi -L | wc -l`
+  if [ ${GPU} == 3 ] ; then 
+    for DATA in ../data/entities/cand_*
+    do
+      ls ${DATA} > candidates.txt
+      cat candidates.txt | awk -v foo=${DATA##*/} '{print foo "/" $1} > candidates.txt'
+      cat candidates.txt | parallel -a - --jobs 85% --load 50% --memfree --noswap \
+        'CUDA_VISIBLE_DEVICES=$(({%}%3)) python ../JAQKET_baseline/my_jaqket_baseline.py \
+        --data_dir ../data/ \
+        --pred_fname ../data/dev/dev_1/dev_aa.json \
+        --entities_fname entities/{} \
+        --task_name jaqket \
+        --model_name_or_path output_dir \
+        --eval_num_options 5 \
+        --per_gpu_eval_batch_size 4 \
+        --do_eval \
+        --overwrite_cache'
+    done
+  fi
+
+fi
 
 echo 'DONE'
 

@@ -113,7 +113,7 @@ class JaqketProcessor(DataProcessor):
         return self._create_examples(
             self._read_json(os.path.join(data_dir, fname)),
             mode,
-            entities,
+            entities,   # candidate dicts (113229): key=entity, value=wiki-articles
             num_options,
         )
 
@@ -153,7 +153,21 @@ class JaqketProcessor(DataProcessor):
             return lines
 
     def _create_examples(self, lines, t_type, entities, num_options):
-        """Creates examples for the training and dev sets."""
+        """
+        Creates examples for the training and dev sets.
+        #aio_leaderboard.json の answer_candidates に相当
+        
+        lines: aio_leaderboard.json の一行
+        entities: candidates: 100k
+        -> contexts を定義するために entities を read している
+
+        おそらく...
+        num_options = len(entities)
+        options = entities.keys()
+        """
+        #####
+        #assert len(entities) == num_options
+        num_options = len(entities)
 
         examples = []
         skip_examples = 0
@@ -162,31 +176,55 @@ class JaqketProcessor(DataProcessor):
         #    lines, desc="read jaqket data", ascii=True, ncols=80
         # ):
         logger.info("read jaqket data: {}".format(len(lines)))
-        for line in lines:
+        for i, line in enumerate(lines):
             data_raw = json.loads(line.strip("\n"))
 
             id = data_raw["qid"]
             question = data_raw["question"].replace("_", "")  # "_" は cloze question
-            options = data_raw["answer_candidates"][:num_options]  # TODO
+            #import ipdb; ipdb.set_trace()
+            #options = data_raw["answer_candidates"][:num_options]  # TODO
+            options = list(entities.keys())
+            #MEMO: options に正解の選択肢がないため error L214
+            #if i == 0:
+            #    options = list(entities.keys())
+            #    #options = data_raw['answer_candidates'][:21]
+            #    num_options = len(entities)
+            #else:
+            #    options = data_raw['answer_candidates'][:num_options]
+            #    num_options = 19
+            
+            # entity は file からそのまま読み込まれる: data_raw を使用
+            # ここを entities.keys() とかにしたら全entity を使用することになる？
+            # num_options = len(entities) = 114229
             answer = data_raw["answer_entity"]
-
-            if answer not in options:
-                continue
+            #if answer not in options and t_type != "pred":
+            #    skip_examples += 1
+            #    continue
 
             if len(options) != num_options:
+            #if False:
                 skip_examples += 1
                 continue
 
             contexts = [entities[options[i]] for i in range(num_options)]
-            truth = str(options.index(answer))
+            # entities['ゴルゴ13 第一章神々の黄昏'] = wiki
 
-            if len(options) == num_options:  # TODO
+            if t_type == "pred":
+                truth = str(-1)
+            else:
+                try:
+                    truth = str(options.index(answer))
+                except:
+                    truth = str(-1)
+
+            #####if len(options) == num_options:  # TODO
+            if True:
                 examples.append(
                     InputExample(
-                        example_id=id,
-                        question=question,
+                        example_id=id,      # qid
+                        question=question,  # question
                         contexts=contexts,
-                        endings=options,
+                        endings=options,    # これが answer_candidates
                         label=truth,
                     )
                 )
@@ -202,7 +240,7 @@ class JaqketProcessor(DataProcessor):
 
 
 def convert_examples_to_features(
-    examples: List[InputExample],
+    examples: List[InputExample],   # len = 問題数
     label_list: List[str],
     max_length: int,
     tokenizer: PreTrainedTokenizer,
@@ -214,21 +252,41 @@ def convert_examples_to_features(
     """
     Loads a data file into a list of `InputFeatures`
     """
+    #print(len(examples))
+    # examples[0].example_id == 'QA20CAPR-0002'
+    # examples[0].question : question
+    # examples[0].contexts
+    # examples[0].endings : candidates
+    # examples[0].label : answer
+
 
     label_map = {label: i for i, label in enumerate(label_list)}
 
     logger.info("Convert examples to features")
-    features = []
-    # for (ex_index, example) in tqdm.tqdm(
-    #    enumerate(examples),
-    #    desc="convert examples to features",
-    #    ascii=True,
-    #    ncols=80,
-    # ):
-    for (ex_index, example) in enumerate(examples):
+    features, choices = [], []
+    for (ex_index, example) in tqdm.tqdm(   #
+       enumerate(examples),
+       desc="convert examples to features",
+       ascii=True,
+       ncols=80,
+    ):
+    #for (ex_index, example) in enumerate(tqdm.tqdm(examples, desc='convert_examples_to_features')):
         if ex_index % 10000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
         choices_features = []
+        choices.append(example.endings)
+
+        #####
+        #if ex_index > 0:
+        #    features.append(
+        #        InputFeatures(
+        #            example_id=example.example_id,
+        #            choices_features=temp,
+        #            label=label,
+        #        )
+        #    )
+        #    continue
+
         for ending_idx, (context, ending) in enumerate(
             zip(example.contexts, example.endings)
         ):
@@ -236,6 +294,9 @@ def convert_examples_to_features(
             text_a = context
             text_b = example.question + tokenizer.sep_token + ending
             # text_b = tokenizer.sep_token + ending
+            # text_a: wiki
+            # text_b: bert に入力する token 列: Questions [SEP] Candidate
+            # 全ての candidate に対して行う
 
             inputs = tokenizer.encode_plus(
                 text_a,
@@ -244,6 +305,9 @@ def convert_examples_to_features(
                 max_length=max_length,
                 truncation_strategy="only_first",  # 常にcontextをtruncate
             )
+            # inputs.keys() = 'input_ids', 'token_type_ids', 'attention_mask'
+            # input_ids: <= 512, ...
+
             if "num_truncated_tokens" in inputs and inputs["num_truncated_tokens"] > 0:
                 logger.info(
                     "Attention! you are cropping tokens (swag task is ok). "
@@ -284,24 +348,27 @@ def convert_examples_to_features(
             assert len(attention_mask) == max_length
             assert len(token_type_ids) == max_length
             choices_features.append((input_ids, attention_mask, token_type_ids))
+            # 各選択肢 ending=option に対して inputs を append
 
-        label = label_map[example.label]
+        label = label_map.get(example.label, -1)
+        #####
+        temp = choices_features
 
-        if ex_index < 2:
-            logger.info("*** Example ***")
-            logger.info("qid: {}".format(example.example_id))
-            for (choice_idx, (input_ids, attention_mask, token_type_ids),) in enumerate(
-                choices_features
-            ):
-                logger.info("choice: {}".format(choice_idx))
-                logger.info("input_ids: {}".format(" ".join(map(str, input_ids))))
-                logger.info(
-                    "attention_mask: {}".format(" ".join(map(str, attention_mask)))
-                )
-                logger.info(
-                    "token_type_ids: {}".format(" ".join(map(str, token_type_ids)))
-                )
-                logger.info("label: {}".format(label))
+        #if ex_index < 2:
+        #    logger.info("*** Example ***")
+        #    logger.info("qid: {}".format(example.example_id))
+        #    for (choice_idx, (input_ids, attention_mask, token_type_ids),) in enumerate(
+        #        choices_features
+        #    ):
+        #        logger.info("choice: {}".format(choice_idx))
+        #        logger.info("input_ids: {}".format(" ".join(map(str, input_ids))))
+        #        logger.info(
+        #            "attention_mask: {}".format(" ".join(map(str, attention_mask)))
+        #        )
+        #        logger.info(
+        #            "token_type_ids: {}".format(" ".join(map(str, token_type_ids)))
+        #        )
+        #        logger.info("label: {}".format(label))
 
         features.append(
             InputFeatures(
@@ -311,7 +378,7 @@ def convert_examples_to_features(
             )
         )
 
-    return features
+    return features, choices
 
 
 processors = {"jaqket": JaqketProcessor}
@@ -606,9 +673,8 @@ def train(args, train_dataset, model, tokenizer):
             # save model END
 
             if args.max_steps > 0 and global_step > args.max_steps:
-                train_iterator.close()
+                epoch_iterator.close()
                 break
-
         if args.max_steps > 0 and global_step > args.max_steps:
             train_iterator.close()
             break
@@ -625,9 +691,10 @@ def evaluate(args, model, tokenizer, prefix="", test=False):
 
     results = {}
     for eval_task, eval_output_dir in zip(eval_task_names, eval_outputs_dirs):
-        eval_dataset = load_and_cache_examples(
+        eval_dataset, info = load_and_cache_examples(
             args, eval_task, tokenizer, evaluate=not test, test=test
         )
+        print(len(eval_dataset))
 
         if not os.path.exists(eval_output_dir) and args.local_rank in [-1, 0]:
             os.makedirs(eval_output_dir)
@@ -677,8 +744,20 @@ def evaluate(args, model, tokenizer, prefix="", test=False):
                 out_label_ids = np.append(
                     out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0,
                 )
+        #eval_loss = eval_loss / nb_eval_steps
 
-        eval_loss = eval_loss / nb_eval_steps
+        assert preds.shape[0] == len(info)
+        with open('cands/{}.json'.format(args.entities_fname.split('/')[-1][:-len('.json.gz')]), 'w') as fj:
+            for i, inf in enumerate(info):
+                p = np.round(preds[i],2).tolist()
+                inf['scores'] = p
+                json.dump(inf, fj, ensure_ascii=False)
+                fj.write('\n')
+
+        #np.savez('cands/_{}'.format(args.pred_fname.split('/')[-1][:-len('.json')]), preds, out_label_ids)
+
+        
+
         preds = np.argmax(preds, axis=1)
         acc = simple_accuracy(preds, out_label_ids)
         result = {"eval_acc": acc, "eval_loss": eval_loss}
@@ -707,7 +786,106 @@ def evaluate(args, model, tokenizer, prefix="", test=False):
     return results
 
 
-def load_and_cache_examples(args, task, tokenizer, evaluate=False, test=False):
+def predict(args, model, tokenizer, prefix="", pred=False):
+    """
+    aio-leadboard.json が {answer_entity=''} なので len(datasets)=0 となってしまう
+    copied from 'evaluate' function
+    """
+    eval_task_names = (args.task_name,)
+    eval_outputs_dirs = (args.output_dir,)
+
+    results = {}
+    for eval_task, eval_output_dir in zip(eval_task_names, eval_outputs_dirs):
+        eval_dataset = load_and_cache_examples(     # ここを continue しないようにする
+            args, eval_task, tokenizer, evaluate=not pred, pred=pred
+        )
+        # eval_dataset[0] で見れる
+        # 選択肢情報: 
+        # - all_input_ids: 20*512
+        # - all_input_mask: 20*512
+        # - all_segment_ids: 20*512
+        # all_label_ids
+
+        if not os.path.exists(eval_output_dir) and args.local_rank in [-1, 0]:
+            os.makedirs(eval_output_dir)
+
+        args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
+        # Note that DistributedSampler samples randomly
+        eval_sampler = SequentialSampler(eval_dataset)
+        eval_dataloader = DataLoader(
+            eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size
+        )
+        logger.info("len dataset: {}".format(len(eval_dataloader)))
+        logger.info("dataset[0]: {}".format(eval_dataset[0]))
+
+        # multi-gpu evaluate
+        if args.n_gpu > 1:
+            model = torch.nn.DataParallel(model)
+
+        # Eval!
+        logger.info("***** Running evaluation {} *****".format(prefix))
+        logger.info("  Num examples = %d", len(eval_dataset))
+        logger.info("  Batch size = %d", args.eval_batch_size)
+        preds = None
+        out_label_ids = None
+        for batch in tqdm.tqdm(
+            eval_dataloader, ascii=True, ncols=80, desc="Evaluating"
+        ):
+            # batch
+            # batch size 分の問題数: 8
+            # 選択肢: 20
+
+            model.eval()
+            batch = tuple(t.to(args.device) for t in batch)
+
+            with torch.no_grad():
+                inputs = {
+                    "input_ids": batch[0],
+                    "attention_mask": batch[1],
+                    "token_type_ids": batch[2],
+                    "labels": -1*torch.ones(len(batch[3]), device='cuda:0', dtype=torch.long),
+                }
+                outputs = model(**inputs)
+                _, logits = outputs[:2]
+                # logits: 8*20
+
+            # preds: 各問題に対する予測解答
+            # 問題数が 1000 のとき，preds.shape=(1000,)
+            if preds is None:
+                preds = logits.detach().cpu().numpy()
+                # preds.shape = 8*20
+                out_label_ids = inputs["labels"].detach().cpu().numpy()
+            else:
+                preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
+                # どんどん追加されていく
+                # 1: preds.shape = 16*20
+                # 2: preds.shape = 24*20
+                out_label_ids = np.append(
+                    out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0,
+                )
+
+        test_json = os.path.join(args.data_dir, args.pred_fname)
+        with open(test_json) as fjs:
+            lines = fjs.readlines()
+        preds = np.argmax(preds, axis=1)
+        # preds.shape = (1000,)
+
+        import ipdb; ipdb.set_trace()
+        output_eval_file = os.path.join(eval_output_dir, "test_from_{}.jsonl".format(args.pred_fname[:-5]))
+        
+        logger.info("write to -> {}".format(output_eval_file))
+        with open(output_eval_file, "w") as fp:
+            for prd, line in zip(preds, lines):
+                line = json.loads(line.strip())
+                import ipdb; ipdb.set_trace()
+                line["answer_entity"] = str(line["answer_candidates"][int(prd)])
+                json.dump(line, fp, ensure_ascii=False)
+                fp.write('\n')
+        
+        
+
+
+def load_and_cache_examples(args, task, tokenizer, evaluate=False, test=False, pred=False):
     if args.local_rank not in [-1, 0]:
         # Make sure only the first process in distributed training process
         # the dataset, and the others will use the cache
@@ -719,6 +897,8 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False, test=False):
         cached_mode = ".".join(args.dev_fname.split(".")[0:-1])
     elif test:
         cached_mode = ".".join(args.test_fname.split(".")[0:-1])
+    elif pred:
+        cached_mode = ".".join(args.pred_fname.split(".")[0:-1])
     else:
         cached_mode = ".".join(args.train_fname.split(".")[0:-1])
     assert (evaluate is True and test is True) is False
@@ -755,6 +935,19 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False, test=False):
                 args.entities_fname,
                 num_options=args.eval_num_options,
             )
+        elif pred:
+            examples = processor.get_examples(
+                "pred",
+                args.data_dir,
+                args.pred_fname,
+                args.entities_fname,
+                num_options=args.eval_num_options,
+            )
+            # print('examples', type(examples), len(examples))
+            # <class 'list'> 1000
+            # examples[0] is <__main__.InputExample object>
+            # examples[0].endings: 選択肢
+
         else:
             examples = processor.get_examples(
                 "train",
@@ -764,17 +957,25 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False, test=False):
                 num_options=args.train_num_options,
             )
         logger.info("Training number: %s", str(len(examples)))
-        features = convert_examples_to_features(
+        features, choices = convert_examples_to_features(
             examples,
             label_list,
             args.max_seq_length,
             tokenizer,
             pad_on_left=False,
             pad_token_segment_id=0,
-        )
-        if args.local_rank in [-1, 0]:
-            logger.info("Saving features into cached file %s", cached_features_file)
-            torch.save(features, cached_features_file)
+        )   #  -> List[InputFeatures]:
+        print(len(features))
+        # InputFeatures objects のリスト
+        # features[0].example_id: qid
+        # features[0].label: label
+        # features[0].choices_features: 選択肢の features
+        #   - input_ids, input_mask, segment_ids からなる
+        # choices: 各問*candidates
+
+        #####if args.local_rank in [-1, 0] and pred != True:
+        #    logger.info("Saving features into cached file %s", cached_features_file)
+        #    torch.save(features, cached_features_file)
 
     if args.local_rank == 0:
         # Make sure only the first process in distributed training process
@@ -790,11 +991,14 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False, test=False):
         select_field(features, "segment_ids"), dtype=torch.long
     )
     all_label_ids = torch.tensor([f.label for f in features], dtype=torch.long)
+    
+    #####
+    info = [{'qid':f.example_id, 'answer':f.label, 'answer_candidates':c} for f, c in zip(features, choices)]
 
     dataset = TensorDataset(
         all_input_ids, all_input_mask, all_segment_ids, all_label_ids
     )
-    return dataset
+    return dataset, info
 
 
 def main():
@@ -829,7 +1033,9 @@ def main():
     parser.add_argument(
         "--dev_fname", default="dev1_questions.json", type=str, help="")
     parser.add_argument(
-        "--test_fname", default="dev2_questions.json", type=str, help="")
+        "--test_fname", default="aio_leaderboard.json", type=str, help="")
+    parser.add_argument(
+        "--pred_fname", default="aio_leaderboard.json", type=str, help="")
     parser.add_argument(
         "--entities_fname", default="candidate_entities.json.gz", type=str,
         help="")
@@ -841,6 +1047,7 @@ def main():
     parser.add_argument("--do_train", action="store_true", help="")
     parser.add_argument("--do_eval", action="store_true", help="")
     parser.add_argument("--do_test", action="store_true", help="")
+    parser.add_argument("--do_predict", action="store_true", help="predict from aio-leadboard.json")
     parser.add_argument("--evaluate_during_training", action="store_true", help="")
     # parser.add_argument(
     #     "--do_lower_case", action='store_true', help="")
@@ -854,7 +1061,7 @@ def main():
     parser.add_argument("--adam_epsilon", default=1e-8, type=float, help="")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="")
     parser.add_argument("--num_train_epochs", default=3.0, type=float, help="")
-    parser.add_argument("--max_steps", default=50, type=int, help="")
+    parser.add_argument("--max_steps", default=-1, type=int, help="")
     parser.add_argument("--warmup_steps", default=0, type=int, help="")
 
     parser.add_argument("--logging_steps", type=int, default=50, help="")
@@ -922,7 +1129,7 @@ def main():
 
     # Setup logging
     logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
+        format="%(asctime)s - %(lineno)d - %(levelname)s - %(name)s -   %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN,
     )
@@ -970,7 +1177,7 @@ def main():
         args.model_name_or_path,
         from_tf=bool(".ckpt" in args.model_name_or_path),
         config=config,
-        cache_dir=args.cache_dir if args.cache_dir else None,
+        cache_dir=argscache_dir if args.cache_dir else None,
     )
 
     if args.local_rank == 0:
@@ -1084,6 +1291,26 @@ def main():
             result = evaluate(args, model, tokenizer, prefix=prefix, test=True)
             result = dict((k + "_{}".format(global_step), v) for k, v in result.items())
             results.update(result)
+    
+    ### my extention ###
+    logger.info("predictor")
+    if args.do_predict and args.local_rank in [-1, 0]:
+        if not args.do_train:
+            args.output_dir = args.model_name_or_path
+        checkpoints = [args.output_dir]
+        logger.info("Evaluate the following checkpoints: %s", checkpoints)
+        for checkpoint in checkpoints:
+            global_step = checkpoint.split("-")[-1] if len(checkpoints) > 1 else ""
+            prefix = (
+                checkpoint.split("/")[-1] if checkpoint.find("checkpoint") != -1 else ""
+            )
+            model = model_class.from_pretrained(checkpoint)
+            # initialize_params(model) #########
+            model.to(args.device)
+            result = predict(args, model, tokenizer, prefix=prefix, pred=True)
+            result = dict((k + "_{}".format(global_step), v) for k, v in result.items())
+            results.update(result)
+    
     if best_steps:
         logger.info(
             "best steps of eval acc is the following checkpoints: %s", best_steps,

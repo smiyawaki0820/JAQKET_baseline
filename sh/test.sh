@@ -15,3 +15,11 @@ python ./JAQKET_baseline/jaqket_baseline.py \
   --do_eval
 
 echo 'FIN TEST'
+
+if [ ${TEST} = 'aio_leaderboard.json' ] ; then
+  python scripts/create_submission_file.py \
+    --test aio_leaderboard.json \
+    --pred is_test_true_output_labels.txt \
+    --fo submission.json \
+    --wq -wc
+fi
