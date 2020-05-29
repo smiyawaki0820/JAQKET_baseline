@@ -20,12 +20,14 @@ def write_csv_fm_jsonl(args):
     suffix = '.' + args.jsonl.split('.')[-1]
     fname = args.jsonl.split('/')[-1][:-len(suffix)]
     fo = open(os.path.join(args.dest, f'{fname}.csv'), 'w')
-    writer = csv.writer(fo, delimiter='\t')
+    # writer = csv.writer(fo, delimiter=',')
 
     for line in open(args.jsonl):
         dictl = json.loads(line.rstrip())
-        listl = [[k, v] for k,v in dictl.items()]
-        writer.writerows(listl)
+        for k, v in dictl.items():
+            print(f'{k}\t{v}', file=fo)
+        # listl = [[str(k), float(v)] for k,v in dictl.items()]
+        # writer.writerows(listl)
     
     fo.close()
 
