@@ -43,4 +43,4 @@ for fjs in ${LS[@]} ; do
 done
 
 header=`cat /tmp/qid.txt | tr "\n" " "`
-sed -i "1s/^/  ${header}\n/" ${SAVE_FILE}
+sed -i "1s/^/- ${header}\n/" ${SAVE_FILE}
