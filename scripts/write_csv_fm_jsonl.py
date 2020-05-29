@@ -18,7 +18,7 @@ def write_csv_fm_jsonl(args):
 
     os.makedirs(args.dest, exist_ok=True)
     suffix = '.' + args.jsonl.split('.')[-1]
-    fname = args.jsonl.split()[-1][:-len(suffix)]
+    fname = args.jsonl.split('/')[-1][:-len(suffix)]
     fo = open(os.path.join(args.dest, f'{fname}.csv'), 'w')
     writer = csv.writer(fo, delimiter='\t')
 
